@@ -960,7 +960,7 @@ dlBtn.addEventListener('click', async () => {
     // The browser's native download manager takes over from here
     const a = document.createElement('a');
     a.href     = downloadUrl;
-    a.download = '';              // let Content-Disposition header name the file
+    a.download = (title.replace(/[^\w\s\-.]/g, '').replace(/\s+/g, '_').slice(0, 100) || 'video') + '.mp4';
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
