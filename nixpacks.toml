@@ -1,10 +1,10 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "yt-dlp", "ffmpeg", "python312"]
+nixPkgs = ["nodejs_20", "yt-dlp", "ffmpeg", "python312", "python312Packages.pip"]
 
 [phases.install]
 cmds = [
   "npm install",
-  "pip install -U yt-dlp"
+  "python3 -m pip install -U yt-dlp --break-system-packages || true"
 ]
 
 [start]
