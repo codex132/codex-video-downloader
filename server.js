@@ -7,17 +7,12 @@
  *   GET  /api/info?url=...        → returns video title, duration, formats
  *   GET  /api/download?url=...&format_id=...  → streams the video file
  *   GET  /health                  → health check for Railway/Render
- *
- * COOKIES SUPPORT:
- *   Place a cookies.txt file in the same folder as this server.js.
- *   It will be used automatically for YouTube, Instagram, Reddit, etc.
- *   If cookies.txt doesn't exist, it's silently ignored.
  */
 
 const express    = require('express');
 const cors       = require('cors');
 const rateLimit  = require('express-rate-limit');
-const { spawn, execSync }  = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path       = require('path');
 const fs         = require('fs');
 const os         = require('os');
@@ -26,11 +21,10 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
-// Keeps yt-dlp fresh so YouTube/Instagram don't block it
 try {
   console.log('[yt-dlp] Checking for updates...');
   const result = execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 60000 }).toString();
-  console.log('[yt-dlp] Update check done:', result.trim() || 'already up to date');
+  console.log('[yt-dlp] Done:', result.trim() || 'already up to date');
 } catch (e) {
   console.warn('[yt-dlp] Auto-update failed (non-fatal):', e.message);
 }
@@ -38,12 +32,7 @@ try {
 // ─── COOKIES FILE ──────────────────────────────────────────────────────────
 const COOKIES_FILE  = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIES_EXIST = fs.existsSync(COOKIES_FILE);
-
-if (COOKIES_EXIST) {
-  console.log(`[cookies] Using cookies file: ${COOKIES_FILE}`);
-} else {
-  console.warn(`[cookies] No cookies.txt found — YouTube/Instagram/Reddit may fail.`);
-}
+console.log(COOKIES_EXIST ? `[cookies] Loaded: ${COOKIES_FILE}` : '[cookies] No cookies.txt found');
 
 // ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
@@ -71,24 +60,19 @@ app.use('/api/', limiter);
 // ─── HEALTH CHECK ──────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   let ytdlpVersion = 'unknown';
-  try {
-    ytdlpVersion = execSync('yt-dlp --version 2>&1').toString().trim();
-  } catch {}
-
+  try { ytdlpVersion = execSync('yt-dlp --version 2>&1').toString().trim(); } catch {}
   res.json({
-    status:       'ok',
-    service:      'CØDΞX Backend',
-    time:         new Date().toISOString(),
-    cookies:      COOKIES_EXIST ? 'loaded' : 'missing',
-    ytdlp:        ytdlpVersion,
+    status:  'ok',
+    service: 'CØDΞX Backend',
+    time:    new Date().toISOString(),
+    cookies: COOKIES_EXIST ? 'loaded' : 'missing',
+    ytdlp:   ytdlpVersion,
   });
 });
 
 // ─── SERVE FRONTEND (optional) ─────────────────────────────────────────────
 const publicDir = path.join(__dirname, 'public');
-if (fs.existsSync(publicDir)) {
-  app.use(express.static(publicDir));
-}
+if (fs.existsSync(publicDir)) app.use(express.static(publicDir));
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 function isValidUrl(str) {
@@ -111,21 +95,52 @@ function bytesToMB(bytes) {
   return Math.round(bytes / 1e6);
 }
 
+// ─── NORMALIZE URL ─────────────────────────────────────────────────────────
+// Converts YouTube Shorts URLs to standard watch URLs
+// Strips tracking params that cause "page needs to be reloaded" errors
+function normalizeUrl(url) {
+  try {
+    const u = new URL(url);
+
+    // Convert YouTube Shorts → regular watch URL
+    if (u.hostname.includes('youtube.com') && u.pathname.startsWith('/shorts/')) {
+      const videoId = u.pathname.replace('/shorts/', '');
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    // Convert youtu.be short links → regular watch URL
+    if (u.hostname === 'youtu.be') {
+      const videoId = u.pathname.slice(1);
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    // Strip YouTube tracking params (si=, feature=, pp=, etc.)
+    if (u.hostname.includes('youtube.com') || u.hostname === 'youtu.be') {
+      const videoId = u.searchParams.get('v');
+      if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    return url;
+  } catch {
+    return url;
+  }
+}
+
 // ─── COOKIES ARGS ──────────────────────────────────────────────────────────
 function cookiesArgs() {
   return COOKIES_EXIST ? ['--cookies', COOKIES_FILE] : [];
 }
 
 // ─── COMMON YT-DLP ARGS ────────────────────────────────────────────────────
-// Extra args that help bypass bot detection
 function commonArgs() {
   return [
     '--no-warnings',
     '--no-playlist',
-    '--retries', '3',
-    '--fragment-retries', '3',
+    '--retries', '5',
+    '--fragment-retries', '5',
     '--no-part',
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
   ];
 }
@@ -148,13 +163,29 @@ function ytdlp(args) {
     });
 
     proc.on('error', err => {
-      if (err.code === 'ENOENT') {
-        reject(new Error('yt-dlp is not installed. Run: pip install yt-dlp'));
-      } else {
-        reject(err);
-      }
+      if (err.code === 'ENOENT') reject(new Error('yt-dlp is not installed. Run: pip install yt-dlp'));
+      else reject(err);
     });
   });
+}
+
+// ─── ERROR CLASSIFIER ──────────────────────────────────────────────────────
+function classifyError(msg) {
+  if (msg.includes('yt-dlp is not installed'))
+    return { status: 500, error: 'yt-dlp is not installed on the server.' };
+  if (msg.includes('Unsupported URL'))
+    return { status: 400, error: 'This URL is not supported.' };
+  if (msg.includes('Private video') || msg.includes('Sign in'))
+    return { status: 403, error: 'This video is private or requires login.' };
+  if (msg.includes('not available') || msg.includes('unavailable'))
+    return { status: 404, error: 'Video not found or unavailable in your region.' };
+  if (msg.includes('reload') || msg.includes('reloaded'))
+    return { status: 503, error: 'YouTube is temporarily blocking this request. Try again in a moment.' };
+  if (msg.includes('HTTP Error 404'))
+    return { status: 404, error: 'Video not found (404). Check the URL and try again.' };
+  if (msg.includes('HTTP Error 403'))
+    return { status: 403, error: 'Access denied by platform. Try again later.' };
+  return { status: 500, error: 'Could not process video. ' + msg.split('\n').slice(-2).join(' ') };
 }
 
 // ─── GET VIDEO INFO ────────────────────────────────────────────────────────
@@ -165,13 +196,11 @@ app.get('/api/info', async (req, res) => {
     return res.status(400).json({ error: 'Invalid or missing URL.' });
   }
 
-  try {
-    const raw = await ytdlp([
-      '--dump-json',
-      ...commonArgs(),
-      url,
-    ]);
+  const cleanUrl = normalizeUrl(url);
+  console.log(`[/api/info] URL: ${url} → ${cleanUrl}`);
 
+  try {
+    const raw  = await ytdlp(['--dump-json', ...commonArgs(), cleanUrl]);
     const info = JSON.parse(raw);
 
     const seenLabels = new Set();
@@ -181,7 +210,6 @@ app.get('/api/info', async (req, res) => {
     for (const f of sorted) {
       const hasVideo = f.vcodec && f.vcodec !== 'none';
       const hasAudio = f.acodec && f.acodec !== 'none';
-
       if (!hasVideo && !hasAudio) continue;
 
       let label, resolution;
@@ -252,19 +280,8 @@ app.get('/api/info', async (req, res) => {
 
   } catch (err) {
     console.error('[/api/info] Error:', err.message);
-
-    if (err.message.includes('yt-dlp is not installed'))
-      return res.status(500).json({ error: 'yt-dlp is not installed on the server.' });
-    if (err.message.includes('Unsupported URL'))
-      return res.status(400).json({ error: 'This URL is not supported.' });
-    if (err.message.includes('Private video') || err.message.includes('Sign in'))
-      return res.status(403).json({ error: 'This video is private or requires login.' });
-    if (err.message.includes('not available'))
-      return res.status(404).json({ error: 'Video not found or unavailable in your region.' });
-    if (err.message.includes('page needs to be reloaded') || err.message.includes('reload'))
-      return res.status(503).json({ error: 'YouTube is temporarily blocking this request. Try again in a moment.' });
-
-    return res.status(500).json({ error: 'Could not fetch video info. ' + err.message });
+    const { status, error } = classifyError(err.message);
+    return res.status(status).json({ error });
   }
 });
 
@@ -276,6 +293,7 @@ app.get('/api/download', async (req, res) => {
     return res.status(400).json({ error: 'Invalid or missing URL.' });
   }
 
+  const cleanUrl  = normalizeUrl(url);
   const fmt       = format_id || 'bestvideo+bestaudio/best';
   const safeTitle = sanitizeFilename(title || 'video');
   const tmpDir    = os.tmpdir();
@@ -287,10 +305,10 @@ app.get('/api/download', async (req, res) => {
     '--merge-output-format', 'mp4',
     ...commonArgs(),
     '-o', tmpFile,
-    url,
+    cleanUrl,
   ];
 
-  console.log(`[/api/download] Starting: ${url} | format: ${fmt} | cookies: ${COOKIES_EXIST}`);
+  console.log(`[/api/download] ${cleanUrl} | format: ${fmt}`);
 
   const proc = spawn(bin, args);
   let stderr = '';
@@ -306,38 +324,53 @@ app.get('/api/download', async (req, res) => {
       res.status(500).json({ error: 'yt-dlp not found: ' + err.message });
   });
 
-  proc.on('close', async code => {
+  proc.on('close', code => {
     if (code !== 0) {
-      console.error('[/api/download] yt-dlp failed:', stderr);
-      if (!res.headersSent)
-        res.status(500).json({ error: 'Download failed. ' + (stderr.split('\n').slice(-2).join(' ')) });
+      console.error('[/api/download] Failed:', stderr);
+      if (!res.headersSent) {
+        const { status, error } = classifyError(stderr);
+        res.status(status).json({ error });
+      }
       return;
     }
 
+    // Find the output file
     const dir     = path.dirname(tmpFile);
     const prefix  = path.basename(tmpFile).split('.')[0];
     let finalFile = null;
 
     try {
       const files = fs.readdirSync(dir);
-      finalFile = files.map(f => path.join(dir, f)).find(f => path.basename(f).startsWith(prefix));
+      finalFile = files
+        .map(f => path.join(dir, f))
+        .find(f => path.basename(f).startsWith(prefix));
     } catch {}
 
     if (!finalFile || !fs.existsSync(finalFile)) {
-      console.error('[/api/download] Output file not found after yt-dlp finished.');
+      console.error('[/api/download] Output file not found.');
       if (!res.headersSent)
         res.status(500).json({ error: 'Download finished but output file was not found.' });
       return;
     }
 
     const ext      = path.extname(finalFile).slice(1) || 'mp4';
-    const mimeMap  = { mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg' };
-    const mimeType = mimeMap[ext] || 'application/octet-stream';
+    const mimeMap  = {
+      mp4:  'video/mp4',
+      webm: 'video/webm',
+      mkv:  'video/x-matroska',
+      mp3:  'audio/mpeg',
+      m4a:  'audio/mp4',
+      ogg:  'audio/ogg',
+    };
+    const mimeType = mimeMap[ext] || 'video/mp4';
     const stat     = fs.statSync(finalFile);
 
+    // Force browser to download as video file, not JSON
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.${ext}"`);
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', stat.size);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Codex-Filename', `${safeTitle}.${ext}`);
 
     console.log(`\n[/api/download] Streaming ${(stat.size / 1e6).toFixed(1)} MB → ${safeTitle}.${ext}`);
@@ -347,7 +380,7 @@ app.get('/api/download', async (req, res) => {
 
     stream.on('close', () => {
       fs.unlink(finalFile, () => {});
-      console.log(`[/api/download] Done & cleaned up: ${path.basename(finalFile)}`);
+      console.log(`[/api/download] Done: ${path.basename(finalFile)}`);
     });
 
     stream.on('error', err => {
@@ -369,9 +402,9 @@ app.listen(PORT, () => {
   ║   CØDΞX Video Downloader — Backend   ║
   ║   Running on http://localhost:${PORT}    ║
   ╚═══════════════════════════════════════╝
-  
-  Cookies: ${COOKIES_EXIST ? '✅ cookies.txt loaded' : '⚠️  cookies.txt missing'}
-  
+
+  Cookies : ${COOKIES_EXIST ? '✅ cookies.txt loaded' : '⚠️  cookies.txt missing'}
+
   Routes:
     GET /health
     GET /api/info?url=<video_url>
