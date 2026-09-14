@@ -17,7 +17,7 @@
 const express    = require('express');
 const cors       = require('cors');
 const rateLimit  = require('express-rate-limit');
-const { spawn }  = require('child_process');
+const { spawn, execSync }  = require('child_process');
 const path       = require('path');
 const fs         = require('fs');
 const os         = require('os');
@@ -25,15 +25,24 @@ const os         = require('os');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+// ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
+// Keeps yt-dlp fresh so YouTube/Instagram don't block it
+try {
+  console.log('[yt-dlp] Checking for updates...');
+  const result = execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 60000 }).toString();
+  console.log('[yt-dlp] Update check done:', result.trim() || 'already up to date');
+} catch (e) {
+  console.warn('[yt-dlp] Auto-update failed (non-fatal):', e.message);
+}
+
 // ─── COOKIES FILE ──────────────────────────────────────────────────────────
-// Path to cookies.txt — change this if your file is elsewhere
-const COOKIES_FILE = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
+const COOKIES_FILE  = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIES_EXIST = fs.existsSync(COOKIES_FILE);
 
 if (COOKIES_EXIST) {
   console.log(`[cookies] Using cookies file: ${COOKIES_FILE}`);
 } else {
-  console.warn(`[cookies] No cookies.txt found at ${COOKIES_FILE} — YouTube/Instagram/Reddit may fail.`);
+  console.warn(`[cookies] No cookies.txt found — YouTube/Instagram/Reddit may fail.`);
 }
 
 // ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────
@@ -61,11 +70,17 @@ app.use('/api/', limiter);
 
 // ─── HEALTH CHECK ──────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
+  let ytdlpVersion = 'unknown';
+  try {
+    ytdlpVersion = execSync('yt-dlp --version 2>&1').toString().trim();
+  } catch {}
+
   res.json({
-    status: 'ok',
-    service: 'CØDΞX Backend',
-    time: new Date().toISOString(),
-    cookies: COOKIES_EXIST ? 'loaded' : 'missing',
+    status:       'ok',
+    service:      'CØDΞX Backend',
+    time:         new Date().toISOString(),
+    cookies:      COOKIES_EXIST ? 'loaded' : 'missing',
+    ytdlp:        ytdlpVersion,
   });
 });
 
@@ -96,17 +111,29 @@ function bytesToMB(bytes) {
   return Math.round(bytes / 1e6);
 }
 
-// ─── BUILD COOKIES ARGS ────────────────────────────────────────────────────
-// Returns ['--cookies', '/path/to/cookies.txt'] if the file exists, else []
-// Injected into every yt-dlp call automatically
+// ─── COOKIES ARGS ──────────────────────────────────────────────────────────
 function cookiesArgs() {
   return COOKIES_EXIST ? ['--cookies', COOKIES_FILE] : [];
+}
+
+// ─── COMMON YT-DLP ARGS ────────────────────────────────────────────────────
+// Extra args that help bypass bot detection
+function commonArgs() {
+  return [
+    '--no-warnings',
+    '--no-playlist',
+    '--retries', '3',
+    '--fragment-retries', '3',
+    '--no-part',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    ...cookiesArgs(),
+  ];
 }
 
 // ─── RUN YT-DLP ────────────────────────────────────────────────────────────
 function ytdlp(args) {
   return new Promise((resolve, reject) => {
-    const bin = process.env.YTDLP_PATH || 'yt-dlp';
+    const bin  = process.env.YTDLP_PATH || 'yt-dlp';
     const proc = spawn(bin, args, { env: { ...process.env, PYTHONUNBUFFERED: '1' } });
 
     let stdout = '';
@@ -141,18 +168,15 @@ app.get('/api/info', async (req, res) => {
   try {
     const raw = await ytdlp([
       '--dump-json',
-      '--no-playlist',
-      '--no-warnings',
-      ...cookiesArgs(),   // <-- cookies injected here
+      ...commonArgs(),
       url,
     ]);
 
     const info = JSON.parse(raw);
 
     const seenLabels = new Set();
-    const formats = [];
-
-    const sorted = (info.formats || []).slice().sort((a, b) => (b.height || 0) - (a.height || 0));
+    const formats    = [];
+    const sorted     = (info.formats || []).slice().sort((a, b) => (b.height || 0) - (a.height || 0));
 
     for (const f of sorted) {
       const hasVideo = f.vcodec && f.vcodec !== 'none';
@@ -237,6 +261,8 @@ app.get('/api/info', async (req, res) => {
       return res.status(403).json({ error: 'This video is private or requires login.' });
     if (err.message.includes('not available'))
       return res.status(404).json({ error: 'Video not found or unavailable in your region.' });
+    if (err.message.includes('page needs to be reloaded') || err.message.includes('reload'))
+      return res.status(503).json({ error: 'YouTube is temporarily blocking this request. Try again in a moment.' });
 
     return res.status(500).json({ error: 'Could not fetch video info. ' + err.message });
   }
@@ -259,9 +285,7 @@ app.get('/api/download', async (req, res) => {
   const args = [
     '-f', fmt,
     '--merge-output-format', 'mp4',
-    '--no-playlist',
-    '--no-warnings',
-    ...cookiesArgs(),   // <-- cookies injected here
+    ...commonArgs(),
     '-o', tmpFile,
     url,
   ];
@@ -290,9 +314,9 @@ app.get('/api/download', async (req, res) => {
       return;
     }
 
-    const dir      = path.dirname(tmpFile);
-    const prefix   = path.basename(tmpFile).split('.')[0];
-    let finalFile  = null;
+    const dir     = path.dirname(tmpFile);
+    const prefix  = path.basename(tmpFile).split('.')[0];
+    let finalFile = null;
 
     try {
       const files = fs.readdirSync(dir);
