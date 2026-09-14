@@ -7,6 +7,11 @@
  *   GET  /api/info?url=...        → returns video title, duration, formats
  *   GET  /api/download?url=...&format_id=...  → streams the video file
  *   GET  /health                  → health check for Railway/Render
+ *
+ * ENV VARS:
+ *   YTDLP_PROXY    = http://user:pass@host:port  (Webshare or any proxy)
+ *   COOKIES_PATH   = /path/to/cookies.txt
+ *   ALLOWED_ORIGINS = https://yourfrontend.com
  */
 
 const express    = require('express');
@@ -23,8 +28,8 @@ const PORT = process.env.PORT || 3000;
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
 try {
   console.log('[yt-dlp] Checking for updates...');
-  const result = execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 60000 }).toString();
-  console.log('[yt-dlp] Done:', result.trim() || 'already up to date');
+  const out = execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 60000 }).toString().trim();
+  console.log('[yt-dlp] Done:', out || 'already up to date');
 } catch (e) {
   console.warn('[yt-dlp] Auto-update failed (non-fatal):', e.message);
 }
@@ -33,6 +38,10 @@ try {
 const COOKIES_FILE  = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIES_EXIST = fs.existsSync(COOKIES_FILE);
 console.log(COOKIES_EXIST ? `[cookies] Loaded: ${COOKIES_FILE}` : '[cookies] No cookies.txt found');
+
+// ─── PROXY ─────────────────────────────────────────────────────────────────
+const PROXY = process.env.YTDLP_PROXY || null;
+console.log(PROXY ? `[proxy] Using proxy: ${PROXY.replace(/:([^:@]+)@/, ':****@')}` : '[proxy] No proxy configured');
 
 // ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
@@ -66,6 +75,7 @@ app.get('/health', (req, res) => {
     service: 'CØDΞX Backend',
     time:    new Date().toISOString(),
     cookies: COOKIES_EXIST ? 'loaded' : 'missing',
+    proxy:   PROXY ? 'configured' : 'none',
     ytdlp:   ytdlpVersion,
   });
 });
@@ -96,26 +106,24 @@ function bytesToMB(bytes) {
 }
 
 // ─── NORMALIZE URL ─────────────────────────────────────────────────────────
-// Converts YouTube Shorts URLs to standard watch URLs
-// Strips tracking params that cause "page needs to be reloaded" errors
 function normalizeUrl(url) {
   try {
     const u = new URL(url);
 
-    // Convert YouTube Shorts → regular watch URL
+    // YouTube Shorts → regular watch URL
     if (u.hostname.includes('youtube.com') && u.pathname.startsWith('/shorts/')) {
       const videoId = u.pathname.replace('/shorts/', '');
       return `https://www.youtube.com/watch?v=${videoId}`;
     }
 
-    // Convert youtu.be short links → regular watch URL
+    // youtu.be short links → regular watch URL
     if (u.hostname === 'youtu.be') {
       const videoId = u.pathname.slice(1);
       return `https://www.youtube.com/watch?v=${videoId}`;
     }
 
     // Strip YouTube tracking params (si=, feature=, pp=, etc.)
-    if (u.hostname.includes('youtube.com') || u.hostname === 'youtu.be') {
+    if (u.hostname.includes('youtube.com')) {
       const videoId = u.searchParams.get('v');
       if (videoId) return `https://www.youtube.com/watch?v=${videoId}`;
     }
@@ -131,6 +139,11 @@ function cookiesArgs() {
   return COOKIES_EXIST ? ['--cookies', COOKIES_FILE] : [];
 }
 
+// ─── PROXY ARGS ────────────────────────────────────────────────────────────
+function proxyArgs() {
+  return PROXY ? ['--proxy', PROXY] : [];
+}
+
 // ─── COMMON YT-DLP ARGS ────────────────────────────────────────────────────
 function commonArgs() {
   return [
@@ -142,6 +155,7 @@ function commonArgs() {
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
+    ...proxyArgs(),
   ];
 }
 
@@ -180,11 +194,13 @@ function classifyError(msg) {
   if (msg.includes('not available') || msg.includes('unavailable'))
     return { status: 404, error: 'Video not found or unavailable in your region.' };
   if (msg.includes('reload') || msg.includes('reloaded'))
-    return { status: 503, error: 'YouTube is temporarily blocking this request. Try again in a moment.' };
+    return { status: 503, error: 'YouTube is blocking this IP. Please configure a proxy in Railway env vars (YTDLP_PROXY).' };
   if (msg.includes('HTTP Error 404'))
     return { status: 404, error: 'Video not found (404). Check the URL and try again.' };
   if (msg.includes('HTTP Error 403'))
     return { status: 403, error: 'Access denied by platform. Try again later.' };
+  if (msg.includes('proxy'))
+    return { status: 502, error: 'Proxy connection failed. Check your YTDLP_PROXY env var.' };
   return { status: 500, error: 'Could not process video. ' + msg.split('\n').slice(-2).join(' ') };
 }
 
@@ -197,7 +213,7 @@ app.get('/api/info', async (req, res) => {
   }
 
   const cleanUrl = normalizeUrl(url);
-  console.log(`[/api/info] URL: ${url} → ${cleanUrl}`);
+  console.log(`[/api/info] ${url} → ${cleanUrl}`);
 
   try {
     const raw  = await ytdlp(['--dump-json', ...commonArgs(), cleanUrl]);
@@ -308,7 +324,7 @@ app.get('/api/download', async (req, res) => {
     cleanUrl,
   ];
 
-  console.log(`[/api/download] ${cleanUrl} | format: ${fmt}`);
+  console.log(`[/api/download] ${cleanUrl} | format: ${fmt} | proxy: ${PROXY ? 'yes' : 'no'}`);
 
   const proc = spawn(bin, args);
   let stderr = '';
@@ -334,7 +350,6 @@ app.get('/api/download', async (req, res) => {
       return;
     }
 
-    // Find the output file
     const dir     = path.dirname(tmpFile);
     const prefix  = path.basename(tmpFile).split('.')[0];
     let finalFile = null;
@@ -347,7 +362,6 @@ app.get('/api/download', async (req, res) => {
     } catch {}
 
     if (!finalFile || !fs.existsSync(finalFile)) {
-      console.error('[/api/download] Output file not found.');
       if (!res.headersSent)
         res.status(500).json({ error: 'Download finished but output file was not found.' });
       return;
@@ -365,7 +379,6 @@ app.get('/api/download', async (req, res) => {
     const mimeType = mimeMap[ext] || 'video/mp4';
     const stat     = fs.statSync(finalFile);
 
-    // Force browser to download as video file, not JSON
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.${ext}"`);
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', stat.size);
@@ -403,7 +416,8 @@ app.listen(PORT, () => {
   ║   Running on http://localhost:${PORT}    ║
   ╚═══════════════════════════════════════╝
 
-  Cookies : ${COOKIES_EXIST ? '✅ cookies.txt loaded' : '⚠️  cookies.txt missing'}
+  Cookies : ${COOKIES_EXIST ? '✅ loaded' : '⚠️  missing'}
+  Proxy   : ${PROXY ? '✅ configured' : '⚠️  none (YouTube may block)'}
 
   Routes:
     GET /health
