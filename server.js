@@ -284,20 +284,48 @@ app.get('/api/download', async (req, res) => {
   const cleanUrl  = normalizeUrl(url);
   const fmt       = format_id || 'bestvideo+bestaudio/best';
   const safeTitle = sanitizeFilename(title || 'video');
-  const tmpDir    = os.tmpdir();
-  const tmpFile   = path.join(tmpDir, `codex_${Date.now()}_${Math.random().toString(36).slice(2)}.%(ext)s`);
   const bin       = process.env.YTDLP_PATH || 'yt-dlp';
 
-  // No proxy for download — direct connection is faster and more reliable
+  // ── STRATEGY: use proxy to get the direct CDN video URL from YouTube,
+  // then redirect the browser to that URL so the browser downloads directly
+  // from YouTube's CDN — bypasses both the IP block AND proxy bandwidth limits
+  try {
+    const getUrlArgs = [
+      '-f', fmt,
+      '--get-url',
+      ...infoArgs(),  // uses proxy to get past YouTube block
+      cleanUrl,
+    ];
+
+    console.log(`[/api/download] Getting direct URL via proxy: ${cleanUrl}`);
+    const directUrl = await ytdlp(getUrlArgs);
+    const firstUrl  = directUrl.split('\n')[0].trim();
+
+    if (!firstUrl || !firstUrl.startsWith('http')) {
+      return res.status(500).json({ error: 'Could not get direct video URL.' });
+    }
+
+    // Redirect browser straight to YouTube CDN — browser downloads it natively
+    console.log(`[/api/download] Redirecting to CDN URL`);
+    return res.redirect(302, firstUrl);
+
+  } catch (err) {
+    console.error('[/api/download] get-url failed, falling back to stream:', err.message);
+    // Fall through to old streaming method if get-url fails
+  }
+
+  const tmpDir    = os.tmpdir();
+  const tmpFile   = path.join(tmpDir, `codex_${Date.now()}_${Math.random().toString(36).slice(2)}.%(ext)s`);
+
   const args = [
     '-f', fmt,
     '--merge-output-format', 'mp4',
-    ...baseArgs(),
+    ...infoArgs(),
     '-o', tmpFile,
     cleanUrl,
   ];
 
-  console.log(`[/api/download] ${cleanUrl} | format: ${fmt} | direct (no proxy)`);
+  console.log(`[/api/download] Fallback streaming: ${cleanUrl} | format: ${fmt}`);
 
   const proc = spawn(bin, args);
   let stderr = '';
