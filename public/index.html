@@ -956,15 +956,8 @@ dlBtn.addEventListener('click', async () => {
     // Build download URL — the browser will handle the file save natively
     const downloadUrl = `${API_BASE}/api/download?url=${encodeURIComponent(url)}&format_id=${encodeURIComponent(fmt.format_id)}&title=${encodeURIComponent(title)}`;
 
-    // Use a hidden anchor to trigger the download
-    // The browser's native download manager takes over from here
-    const a = document.createElement('a');
-    a.href     = downloadUrl;
-    a.download = (title.replace(/[^\w\s\-.]/g, '').replace(/\s+/g, '_').slice(0, 100) || 'video') + '.mp4';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    // Open download URL directly — bypasses browser cache and forces fresh download
+    window.open(downloadUrl, '_blank');
 
     // Give it a moment then complete the UI
     await sleep(2500);
