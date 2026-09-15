@@ -5,9 +5,10 @@ nixPkgs = ["python311", "python311Packages.pip", "ffmpeg", "unzip", "nodejs_20"]
 cmds = [
   "npm install",
   "pip install yt-dlp yt-dlp-ejs --break-system-packages",
+  "python3 -m yt_dlp --version",
+  "ln -sf $(python3 -c 'import sys; print(sys.prefix)')/bin/yt-dlp /usr/local/bin/yt-dlp",
   "curl -fsSL https://deno.land/install.sh | sh",
-  "cp /root/.deno/bin/deno /usr/local/bin/deno",
-  "cp $(which yt-dlp) /usr/local/bin/yt-dlp"
+  "cp /root/.deno/bin/deno /usr/local/bin/deno"
 ]
 
 [start]
