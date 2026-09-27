@@ -140,14 +140,14 @@ function proxyArgs() {
   return PROXY ? ['--proxy', PROXY] : [];
 }
 
-// Args for fetching info (uses tv client to bypass IP block)
+// Args for fetching info — tries mweb client which is less blocked on server IPs
 function infoArgs() {
   return [
     '--no-warnings',
     '--no-playlist',
     '--retries', '3',
-    '--extractor-args', 'youtube:player_client=tv,web',
-    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    '--extractor-args', 'youtube:player_client=mweb,tv,web',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
     ...proxyArgs(),
@@ -162,11 +162,10 @@ function downloadArgs() {
     '--retries', '5',
     '--fragment-retries', '5',
     '--no-part',
-    '--extractor-args', 'youtube:player_client=tv,web',
-    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    '--extractor-args', 'youtube:player_client=mweb,tv,web',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
-    // No proxy here — direct download is faster and proxy blocks large files
   ];
 }
 
