@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
 try {
   console.log('[yt-dlp] Updating...');
-  execSync('pip install -U yt-dlp yt-dlp-ejs --break-system-packages --quiet 2>&1 || pip install -U yt-dlp yt-dlp-ejs --quiet', { timeout: 120000 });
+  execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 120000 });
   console.log('[yt-dlp] Updated');
 } catch (e) {
   console.warn('[yt-dlp] Update failed (non-fatal):', e.message);
@@ -144,7 +144,6 @@ function infoArgs() {
     '--no-warnings',
     '--no-playlist',
     '--retries', '3',
-    '--js-runtimes', 'node',   // Use Node.js (already on Railway) for YouTube JS challenge
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
@@ -160,7 +159,6 @@ function downloadArgs() {
     '--retries', '5',
     '--fragment-retries', '5',
     '--no-part',
-    '--js-runtimes', 'node',   // Use Node.js (already on Railway) for YouTube JS challenge
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
