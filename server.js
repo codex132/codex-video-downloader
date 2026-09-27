@@ -14,7 +14,6 @@ const os         = require('os');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-
 app.set('trust proxy', 1);
 
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
@@ -140,14 +139,13 @@ function proxyArgs() {
   return PROXY ? ['--proxy', PROXY] : [];
 }
 
-// Args for fetching info — tries mweb client which is less blocked on server IPs
+// Args for fetching info (uses proxy to bypass IP block)
 function infoArgs() {
   return [
     '--no-warnings',
     '--no-playlist',
     '--retries', '3',
-    '--extractor-args', 'youtube:player_client=mweb,tv,web',
-    '--add-header', 'User-Agent:Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
     ...proxyArgs(),
@@ -162,10 +160,10 @@ function downloadArgs() {
     '--retries', '5',
     '--fragment-retries', '5',
     '--no-part',
-    '--extractor-args', 'youtube:player_client=mweb,tv,web',
-    '--add-header', 'User-Agent:Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
+    // No proxy here — direct download is faster and proxy blocks large files
   ];
 }
 
@@ -207,6 +205,54 @@ function classifyError(msg) {
   return { status: 500, error: 'Could not process video. ' + msg.split('\n').slice(-2).join(' ') };
 }
 
+// ─── INVIDIOUS INSTANCES (fallback list) ───────────────────────────────────
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://invidious.privacydev.net',
+  'https://vid.puffyan.us',
+];
+
+async function fetchInvidious(videoId) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const https = require('https');
+      const data = await new Promise((resolve, reject) => {
+        const req = https.get(`${instance}/api/v1/videos/${videoId}?fields=title,lengthSeconds,videoThumbnails,author,viewCount,published,formatStreams,adaptiveFormats`, {
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        }, (r) => {
+          let body = '';
+          r.on('data', d => body += d);
+          r.on('end', () => {
+            if (r.statusCode === 200) resolve(JSON.parse(body));
+            else reject(new Error(`Status ${r.statusCode}`));
+          });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
+      });
+      console.log(`[invidious] Success: ${instance}`);
+      return data;
+    } catch (e) {
+      console.warn(`[invidious] Failed ${instance}: ${e.message}`);
+    }
+  }
+  throw new Error('All Invidious instances failed');
+}
+
+function extractVideoId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('?')[0];
+    if (u.hostname.includes('youtube.com')) {
+      if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2];
+      return u.searchParams.get('v');
+    }
+  } catch {}
+  return null;
+}
+
 // ─── GET VIDEO INFO ────────────────────────────────────────────────────────
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
@@ -214,8 +260,91 @@ app.get('/api/info', async (req, res) => {
     return res.status(400).json({ error: 'Invalid or missing URL.' });
 
   const cleanUrl = normalizeUrl(url);
-  console.log(`[/api/info] ${cleanUrl}`);
+  const videoId  = extractVideoId(url);
+  console.log(`[/api/info] ${cleanUrl} | videoId: ${videoId}`);
 
+  // Try Invidious first for YouTube (avoids Railway IP block)
+  if (videoId) {
+    try {
+      const info = await fetchInvidious(videoId);
+
+      const seenLabels = new Set();
+      const formats    = [];
+
+      // Add format streams (combined video+audio)
+      const allFormats = [
+        ...(info.formatStreams || []),
+        ...(info.adaptiveFormats || []),
+      ].sort((a, b) => (parseInt(b.resolution) || 0) - (parseInt(a.resolution) || 0));
+
+      for (const f of allFormats) {
+        const res2   = f.resolution || '';
+        const height = parseInt(res2) || 0;
+        const hasVideo = f.type && f.type.includes('video');
+        const hasAudio = f.type && f.type.includes('audio');
+
+        if (!hasVideo && !hasAudio) continue;
+
+        let label;
+        if (hasVideo) {
+          if      (height >= 2160) label = '4K';
+          else if (height >= 1440) label = '1440p';
+          else if (height >= 1080) label = '1080p';
+          else if (height >= 720)  label = '720p';
+          else if (height >= 480)  label = '480p';
+          else if (height >= 360)  label = '360p';
+          else if (height >= 240)  label = '240p';
+          else if (height > 0)     label = height + 'p';
+          else continue;
+        } else {
+          label = 'Audio';
+        }
+
+        if (seenLabels.has(label)) continue;
+        seenLabels.add(label);
+
+        formats.push({
+          format_id:    f.itag || label,
+          label,
+          resolution:   res2 || 'audio',
+          ext:          'mp4',
+          filesize:     null,
+          filesize_mb:  null,
+          filesize_str: 'Auto',
+          has_video:    hasVideo,
+          has_audio:    hasAudio,
+          note:         f.qualityLabel || '',
+        });
+      }
+
+      formats.unshift({
+        format_id: 'bestvideo+bestaudio/best', label: 'Best',
+        resolution: 'best', ext: 'mp4',
+        filesize: null, filesize_mb: null, filesize_str: 'Auto',
+        has_video: true, has_audio: true, note: 'Best available quality',
+      });
+
+      const thumb = (info.videoThumbnails || []).find(t => t.quality === 'maxres') ||
+                    (info.videoThumbnails || [])[0];
+
+      return res.json({
+        title:       info.title,
+        duration:    info.lengthSeconds,
+        duration_str: new Date(info.lengthSeconds * 1000).toISOString().substr(11, 8).replace(/^00:/, ''),
+        thumbnail:   thumb ? thumb.url : null,
+        uploader:    info.author,
+        view_count:  info.viewCount,
+        upload_date: info.published,
+        webpage_url: cleanUrl,
+        extractor:   'Youtube',
+        formats,
+      });
+    } catch (e) {
+      console.warn('[/api/info] Invidious failed, falling back to yt-dlp:', e.message);
+    }
+  }
+
+  // Fallback to yt-dlp
   try {
     const raw  = await ytdlp(['--dump-json', ...infoArgs(), cleanUrl]);
     const info = JSON.parse(raw);
@@ -250,17 +379,11 @@ app.get('/api/info', async (req, res) => {
 
       const filesize = f.filesize || f.filesize_approx || null;
       formats.push({
-        format_id:    f.format_id,
-        label, resolution,
-        ext:          f.ext || 'mp4',
-        filesize,
-        filesize_mb:  bytesToMB(filesize),
-        filesize_str: formatBytes(filesize),
-        has_video:    hasVideo,
-        has_audio:    hasAudio,
-        note:         f.format_note || '',
-        vcodec:       f.vcodec,
-        acodec:       f.acodec,
+        format_id: f.format_id, label, resolution,
+        ext: f.ext || 'mp4', filesize,
+        filesize_mb: bytesToMB(filesize), filesize_str: formatBytes(filesize),
+        has_video: hasVideo, has_audio: hasAudio,
+        note: f.format_note || '', vcodec: f.vcodec, acodec: f.acodec,
       });
     }
 
