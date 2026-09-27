@@ -1,13 +1,11 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "yt-dlp", "ffmpeg", "python311", "unzip", "curl"]
+nixPkgs = ["nodejs_20", "yt-dlp", "ffmpeg", "python311", "unzip"]
 
 [phases.install]
 cmds = [
   "npm install",
-  "pip install -U yt-dlp yt-dlp-ejs --break-system-packages || pip install -U yt-dlp yt-dlp-ejs",
   "curl -fsSL https://deno.land/install.sh | sh",
-  "cp /root/.deno/bin/deno /usr/local/bin/deno || true",
-  "deno --version || echo 'Deno install failed'"
+  "cp /root/.deno/bin/deno /usr/local/bin/deno"
 ]
 
 [start]
