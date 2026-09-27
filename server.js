@@ -24,6 +24,24 @@ try {
   console.warn('[yt-dlp] Update failed (non-fatal):', e.message);
 }
 
+// ─── INSTALL DENO (if not found) ───────────────────────────────────────────
+// Deno is required for YouTube JS challenge solving (yt-dlp EJS)
+try {
+  execSync('deno --version', { stdio: 'ignore' });
+  console.log('[deno] Already installed');
+} catch {
+  console.log('[deno] Not found — installing...');
+  try {
+    execSync(
+      'curl -fsSL https://deno.land/install.sh | sh && cp /root/.deno/bin/deno /usr/local/bin/deno',
+      { timeout: 120000, stdio: 'inherit', shell: '/bin/sh' }
+    );
+    console.log('[deno] Installed successfully');
+  } catch (e) {
+    console.warn('[deno] Install failed (non-fatal):', e.message);
+  }
+}
+
 // ─── COOKIES FILE ──────────────────────────────────────────────────────────
 const COOKIES_FILE  = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIES_EXIST = fs.existsSync(COOKIES_FILE);
