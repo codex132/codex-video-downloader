@@ -1,7 +1,7 @@
 /**
  * CØDΞX Video Downloader — Backend Server
  * ----------------------------------------
- * Node.js + Express + yt-dlp
+ * Node.js + Express + yt-dlp + Deno (for YouTube JS challenge)
  */
 
 const express    = require('express');
@@ -13,22 +13,21 @@ const fs         = require('fs');
 const os         = require('os');
 
 const app  = express();
-app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
 try {
-  console.log('[yt-dlp] Checking for updates...');
-  const out = execSync('pip install -U yt-dlp --quiet 2>&1', { timeout: 60000 }).toString().trim();
-  console.log('[yt-dlp] Done:', out || 'already up to date');
+  console.log('[yt-dlp] Updating...');
+  execSync('pip install -U yt-dlp yt-dlp-ejs --break-system-packages --quiet 2>&1 || pip install -U yt-dlp yt-dlp-ejs --quiet', { timeout: 120000 });
+  console.log('[yt-dlp] Updated');
 } catch (e) {
-  console.warn('[yt-dlp] Auto-update failed (non-fatal):', e.message);
+  console.warn('[yt-dlp] Update failed (non-fatal):', e.message);
 }
 
 // ─── COOKIES FILE ──────────────────────────────────────────────────────────
 const COOKIES_FILE  = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const COOKIES_EXIST = fs.existsSync(COOKIES_FILE);
-console.log(COOKIES_EXIST ? `[cookies] Loaded: ${COOKIES_FILE}` : '[cookies] No cookies.txt found');
+console.log(COOKIES_EXIST ? `[cookies] Loaded` : '[cookies] No cookies.txt found');
 
 // ─── PROXY ─────────────────────────────────────────────────────────────────
 const PROXY = process.env.YTDLP_PROXY || null;
@@ -36,7 +35,6 @@ console.log(PROXY ? `[proxy] Configured` : '[proxy] None');
 
 // ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
-
 app.use(cors({
   origin: ALLOWED_ORIGINS[0] === '*' ? '*' : (origin, cb) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
@@ -44,23 +42,21 @@ app.use(cors({
   },
   methods: ['GET'],
 }));
-
 app.use(express.json());
 
 // ─── RATE LIMITING ─────────────────────────────────────────────────────────
-const limiter = rateLimit({
+app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
   message: { error: 'Too many requests. Please wait a few minutes.' },
-});
-app.use('/api/', limiter);
+}));
 
 // ─── HEALTH CHECK ──────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   let ytdlpVersion = 'unknown';
+  let denoVersion  = 'not found';
   try { ytdlpVersion = execSync('yt-dlp --version 2>&1').toString().trim(); } catch {}
+  try { denoVersion  = execSync('deno --version 2>&1').toString().split('\n')[0].trim(); } catch {}
   res.json({
     status:  'ok',
     service: 'CØDΞX Backend',
@@ -68,6 +64,7 @@ app.get('/health', (req, res) => {
     cookies: COOKIES_EXIST ? 'loaded' : 'missing',
     proxy:   PROXY ? 'configured' : 'none',
     ytdlp:   ytdlpVersion,
+    deno:    denoVersion,
   });
 });
 
@@ -114,15 +111,30 @@ function normalizeUrl(url) {
   } catch { return url; }
 }
 
-// ─── COOKIES ARGS ──────────────────────────────────────────────────────────
+// ─── ARGS BUILDERS ─────────────────────────────────────────────────────────
 function cookiesArgs() {
   return COOKIES_EXIST ? ['--cookies', COOKIES_FILE] : [];
 }
 
-// ─── BASE ARGS (no proxy) — used for actual download ───────────────────────
-// Proxy is intentionally excluded here because free proxies can't handle
-// streaming large video files — only used for info fetching
-function baseArgs() {
+function proxyArgs() {
+  return PROXY ? ['--proxy', PROXY] : [];
+}
+
+// Args for fetching info (uses proxy to bypass IP block)
+function infoArgs() {
+  return [
+    '--no-warnings',
+    '--no-playlist',
+    '--retries', '3',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    '--add-header', 'Accept-Language:en-US,en;q=0.9',
+    ...cookiesArgs(),
+    ...proxyArgs(),
+  ];
+}
+
+// Args for downloading (NO proxy — proxy blocks large file streaming)
+function downloadArgs() {
   return [
     '--no-warnings',
     '--no-playlist',
@@ -132,14 +144,8 @@ function baseArgs() {
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
+    // No proxy here — direct download is faster and proxy blocks large files
   ];
-}
-
-// ─── INFO ARGS (with proxy) — used only for fetching video metadata ─────────
-function infoArgs() {
-  const args = [...baseArgs()];
-  if (PROXY) args.push('--proxy', PROXY);
-  return args;
 }
 
 // ─── RUN YT-DLP ────────────────────────────────────────────────────────────
@@ -147,18 +153,13 @@ function ytdlp(args) {
   return new Promise((resolve, reject) => {
     const bin  = process.env.YTDLP_PATH || 'yt-dlp';
     const proc = spawn(bin, args, { env: { ...process.env, PYTHONUNBUFFERED: '1' } });
-
-    let stdout = '';
-    let stderr = '';
-
+    let stdout = '', stderr = '';
     proc.stdout.on('data', d => stdout += d.toString());
     proc.stderr.on('data', d => stderr += d.toString());
-
     proc.on('close', code => {
       if (code === 0) resolve(stdout.trim());
       else reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
     });
-
     proc.on('error', err => {
       if (err.code === 'ENOENT') reject(new Error('yt-dlp is not installed.'));
       else reject(err);
@@ -177,25 +178,22 @@ function classifyError(msg) {
   if (msg.includes('not available') || msg.includes('unavailable'))
     return { status: 404, error: 'Video not found or unavailable in your region.' };
   if (msg.includes('reload') || msg.includes('reloaded'))
-    return { status: 503, error: 'YouTube is temporarily blocking this request. Try again in a moment.' };
+    return { status: 503, error: 'YouTube is temporarily blocking this. Try again in a moment.' };
   if (msg.includes('HTTP Error 404'))
     return { status: 404, error: 'Video not found (404). Check the URL.' };
-  if (msg.includes('HTTP Error 403'))
+  if (msg.includes('HTTP Error 403') || msg.includes('Access denied') || msg.includes('Forbidden'))
     return { status: 403, error: 'Access denied by platform. Try again later.' };
-  if (msg.includes('proxy'))
-    return { status: 502, error: 'Proxy error. Try again.' };
   return { status: 500, error: 'Could not process video. ' + msg.split('\n').slice(-2).join(' ') };
 }
 
 // ─── GET VIDEO INFO ────────────────────────────────────────────────────────
-// Uses proxy to bypass IP blocks when fetching metadata
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
   if (!url || !isValidUrl(url))
     return res.status(400).json({ error: 'Invalid or missing URL.' });
 
   const cleanUrl = normalizeUrl(url);
-  console.log(`[/api/info] ${url} → ${cleanUrl} | proxy: ${PROXY ? 'yes' : 'no'}`);
+  console.log(`[/api/info] ${cleanUrl}`);
 
   try {
     const raw  = await ytdlp(['--dump-json', ...infoArgs(), cleanUrl]);
@@ -232,8 +230,7 @@ app.get('/api/info', async (req, res) => {
       const filesize = f.filesize || f.filesize_approx || null;
       formats.push({
         format_id:    f.format_id,
-        label,
-        resolution,
+        label, resolution,
         ext:          f.ext || 'mp4',
         filesize,
         filesize_mb:  bytesToMB(filesize),
@@ -248,23 +245,19 @@ app.get('/api/info', async (req, res) => {
 
     if (!seenLabels.has('Best')) {
       formats.unshift({
-        format_id: 'bestvideo+bestaudio/best',
-        label: 'Best', resolution: 'best', ext: 'mp4',
+        format_id: 'bestvideo+bestaudio/best', label: 'Best',
+        resolution: 'best', ext: 'mp4',
         filesize: null, filesize_mb: null, filesize_str: 'Auto',
         has_video: true, has_audio: true, note: 'Best available quality',
       });
     }
 
     return res.json({
-      title:        info.title,
-      duration:     info.duration,
-      duration_str: info.duration_string,
-      thumbnail:    info.thumbnail,
-      uploader:     info.uploader || info.channel,
-      view_count:   info.view_count,
-      upload_date:  info.upload_date,
-      webpage_url:  info.webpage_url,
-      extractor:    info.extractor_key,
+      title: info.title, duration: info.duration,
+      duration_str: info.duration_string, thumbnail: info.thumbnail,
+      uploader: info.uploader || info.channel,
+      view_count: info.view_count, upload_date: info.upload_date,
+      webpage_url: info.webpage_url, extractor: info.extractor_key,
       formats,
     });
 
@@ -276,7 +269,6 @@ app.get('/api/info', async (req, res) => {
 });
 
 // ─── DOWNLOAD VIDEO ────────────────────────────────────────────────────────
-// Does NOT use proxy — direct connection for fast reliable streaming
 app.get('/api/download', async (req, res) => {
   const { url, format_id, title } = req.query;
   if (!url || !isValidUrl(url))
@@ -285,48 +277,19 @@ app.get('/api/download', async (req, res) => {
   const cleanUrl  = normalizeUrl(url);
   const fmt       = format_id || 'bestvideo+bestaudio/best';
   const safeTitle = sanitizeFilename(title || 'video');
-  const bin       = process.env.YTDLP_PATH || 'yt-dlp';
-
-  // ── STRATEGY: use proxy to get the direct CDN video URL from YouTube,
-  // then redirect the browser to that URL so the browser downloads directly
-  // from YouTube's CDN — bypasses both the IP block AND proxy bandwidth limits
-  try {
-    const getUrlArgs = [
-      '-f', fmt,
-      '--get-url',
-      ...infoArgs(),  // uses proxy to get past YouTube block
-      cleanUrl,
-    ];
-
-    console.log(`[/api/download] Getting direct URL via proxy: ${cleanUrl}`);
-    const directUrl = await ytdlp(getUrlArgs);
-    const firstUrl  = directUrl.split('\n')[0].trim();
-
-    if (!firstUrl || !firstUrl.startsWith('http')) {
-      return res.status(500).json({ error: 'Could not get direct video URL.' });
-    }
-
-    // Redirect browser straight to YouTube CDN — browser downloads it natively
-    console.log(`[/api/download] Redirecting to CDN URL`);
-    return res.redirect(302, firstUrl);
-
-  } catch (err) {
-    console.error('[/api/download] get-url failed, falling back to stream:', err.message);
-    // Fall through to old streaming method if get-url fails
-  }
-
   const tmpDir    = os.tmpdir();
   const tmpFile   = path.join(tmpDir, `codex_${Date.now()}_${Math.random().toString(36).slice(2)}.%(ext)s`);
+  const bin       = process.env.YTDLP_PATH || 'yt-dlp';
 
   const args = [
     '-f', fmt,
     '--merge-output-format', 'mp4',
-    ...infoArgs(),
+    ...downloadArgs(),
     '-o', tmpFile,
     cleanUrl,
   ];
 
-  console.log(`[/api/download] Fallback streaming: ${cleanUrl} | format: ${fmt}`);
+  console.log(`[/api/download] ${cleanUrl} | format: ${fmt}`);
 
   const proc = spawn(bin, args);
   let stderr = '';
@@ -363,15 +326,12 @@ app.get('/api/download', async (req, res) => {
 
     if (!finalFile || !fs.existsSync(finalFile)) {
       if (!res.headersSent)
-        res.status(500).json({ error: 'Download finished but output file was not found.' });
+        res.status(500).json({ error: 'Output file not found after download.' });
       return;
     }
 
     const ext      = path.extname(finalFile).slice(1) || 'mp4';
-    const mimeMap  = {
-      mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska',
-      mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg',
-    };
+    const mimeMap  = { mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', mp3: 'audio/mpeg', m4a: 'audio/mp4' };
     const mimeType = mimeMap[ext] || 'video/mp4';
     const stat     = fs.statSync(finalFile);
 
@@ -380,7 +340,6 @@ app.get('/api/download', async (req, res) => {
     res.setHeader('Content-Length', stat.size);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('X-Codex-Filename', `${safeTitle}.${ext}`);
 
     console.log(`\n[/api/download] Streaming ${(stat.size / 1e6).toFixed(1)} MB → ${safeTitle}.${ext}`);
 
@@ -389,14 +348,12 @@ app.get('/api/download', async (req, res) => {
 
     stream.on('close', () => {
       fs.unlink(finalFile, () => {});
-      console.log(`[/api/download] Done: ${path.basename(finalFile)}`);
+      console.log(`[/api/download] Done.`);
     });
-
     stream.on('error', err => {
       console.error('[/api/download] Stream error:', err.message);
       fs.unlink(finalFile, () => {});
     });
-
     req.on('close', () => {
       stream.destroy();
       fs.unlink(finalFile, () => {});
@@ -411,13 +368,7 @@ app.listen(PORT, () => {
   ║   CØDΞX Video Downloader — Backend   ║
   ║   Running on http://localhost:${PORT}    ║
   ╚═══════════════════════════════════════╝
-
   Cookies : ${COOKIES_EXIST ? '✅ loaded' : '⚠️  missing'}
-  Proxy   : ${PROXY ? '✅ configured (info only)' : '⚠️  none'}
-
-  Routes:
-    GET /health
-    GET /api/info?url=<video_url>
-    GET /api/download?url=<video_url>&format_id=<id>&title=<title>
+  Proxy   : ${PROXY ? '✅ configured' : '⚠️  none'}
   `);
 });
