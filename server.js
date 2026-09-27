@@ -15,6 +15,8 @@ const os         = require('os');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
+
 // ─── AUTO-UPDATE YT-DLP ────────────────────────────────────────────────────
 try {
   console.log('[yt-dlp] Updating...');
@@ -138,12 +140,13 @@ function proxyArgs() {
   return PROXY ? ['--proxy', PROXY] : [];
 }
 
-// Args for fetching info (uses proxy to bypass IP block)
+// Args for fetching info (uses tv client to bypass IP block)
 function infoArgs() {
   return [
     '--no-warnings',
     '--no-playlist',
     '--retries', '3',
+    '--extractor-args', 'youtube:player_client=tv,web',
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
@@ -159,6 +162,7 @@ function downloadArgs() {
     '--retries', '5',
     '--fragment-retries', '5',
     '--no-part',
+    '--extractor-args', 'youtube:player_client=tv,web',
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
