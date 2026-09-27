@@ -144,6 +144,7 @@ function infoArgs() {
     '--no-warnings',
     '--no-playlist',
     '--retries', '3',
+    '--js-runtimes', 'node',   // Use Node.js (already on Railway) for YouTube JS challenge
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
@@ -159,6 +160,7 @@ function downloadArgs() {
     '--retries', '5',
     '--fragment-retries', '5',
     '--no-part',
+    '--js-runtimes', 'node',   // Use Node.js (already on Railway) for YouTube JS challenge
     '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     '--add-header', 'Accept-Language:en-US,en;q=0.9',
     ...cookiesArgs(),
